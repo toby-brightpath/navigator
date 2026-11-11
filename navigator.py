@@ -1,0 +1,85 @@
+"""
+Navigator - Phase 1: a terminal chat with Claude.
+
+Run it from C:\\dev\\navigator with the virtual environment active:
+    python navigator.py
+
+Type a question and press Enter. Type "quit" to exit.
+"""
+
+import os
+import sys
+
+import anthropic
+
+# Which Claude model to use. Sonnet is a good balance of quality and cost.
+MODEL = "claude-sonnet-5-5"
+
+# The system prompt tells Claude who it is and how to behave.
+# This is where Navigator's personality and safety rules live.
+SYSTEM_PROMPT = """You are Navigator, a patient helper for older adults with low vision.
+
+How you talk:
+- Use short, plain sentences. No jargon.
+- Give one step at a time, then ask if they are ready for the next step.
+- Be warm and calm. Never rush the person.
+- Plain text only. No asterisks, bullet symbols, or other formatting.
+
+Safety rules:
+- If you are not sure about something, say so plainly. Never guess.
+- For medications, money, or medical instructions, repeat the exact words
+  and suggest confirming with a pharmacist, doctor, or family member.
+- Never tell the person to call, pay, or delete anything without them
+  clearly agreeing first.
+"""
+
+
+def main():
+    # Stop early with a clear message if the API key isn't set.
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("ANTHROPIC_API_KEY is not set. Run setx, then open a new window.")
+        sys.exit(1)
+
+    client = anthropic.Anthropic()  # reads the key from the environment
+    history = []  # the conversation so far, so Claude remembers context
+
+    print("Navigator is ready. Type 'quit' to exit.\n")
+
+    while True:
+        user_text = input("You: ").strip()
+        if user_text.lower() in ("quit", "exit"):
+            print("Goodbye.")
+            break
+        if not user_text:
+            continue
+
+        history.append({"role": "user", "content": user_text})
+
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                messages=history,
+            )
+        except anthropic.APIError as err:
+            print(f"\n[Error talking to Claude: {err}]\n")
+            history.pop()  # drop the message that failed so we can retry
+            continue
+
+        # A reply can hold several blocks: Claude's private "thinking" first,
+        # then the answer. Keep only the text blocks for printing.
+        reply = "".join(
+            block.text for block in response.content if block.type == "text"
+        )
+        # Save the full reply (thinking included) so Claude keeps its context.
+        history.append({"role": "assistant", "content": response.content})
+
+        print(f"\nNavigator: {reply}\n")
+        # Shows how many tokens this exchange used, so you can watch cost.
+        print(f"[tokens in: {response.usage.input_tokens}, "
+              f"out: {response.usage.output_tokens}]\n")
+
+
+if __name__ == "__main__":
+    main()

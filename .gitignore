@@ -1,0 +1,5 @@
+# Keep the virtual environment and any secrets out of Git
+.venv/
+.env
+__pycache__/
+*.pyc
