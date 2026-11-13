@@ -1,19 +1,40 @@
 """
-Navigator - Phase 1: a terminal chat with Claude.
+Navigator - Phase 2: chat with Claude, plus reading photos of mail and labels.
 
 Run it from C:\\dev\\navigator with the virtual environment active:
     python navigator.py
 
-Type a question and press Enter. Type "quit" to exit.
+Commands:
+    read <path to photo>   Navigator reads the letter, bill, or label aloud
+                           in plain language. Tip: drag the photo into the
+                           window to paste its path.
+    quit                   Exit.
+Anything else is a normal question.
 """
 
+import base64
+import io
 import os
 import sys
+from pathlib import Path
 
 import anthropic
+from PIL import Image, ImageOps
+
+# iPhone photos are often .HEIC. If the optional pillow-heif package is
+# installed (pip install pillow-heif), Pillow can open them too.
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 
 # Which Claude model to use. Sonnet is a good balance of quality and cost.
 MODEL = "claude-sonnet-5-5"
+
+# Photos are shrunk so the longest side is at most this many pixels.
+# Bigger than this costs more and doesn't help Claude read any better.
+MAX_SIDE = 1568
 
 # The system prompt tells Claude who it is and how to behave.
 # This is where Navigator's personality and safety rules live.
@@ -21,9 +42,9 @@ SYSTEM_PROMPT = """You are Navigator, a patient helper for older adults with low
 
 How you talk:
 - Use short, plain sentences. No jargon.
+- Plain text only. No asterisks, bullet symbols, or other formatting.
 - Give one step at a time, then ask if they are ready for the next step.
 - Be warm and calm. Never rush the person.
-- Plain text only. No asterisks, bullet symbols, or other formatting.
 
 Safety rules:
 - If you are not sure about something, say so plainly. Never guess.
@@ -31,7 +52,64 @@ Safety rules:
   and suggest confirming with a pharmacist, doctor, or family member.
 - Never tell the person to call, pay, or delete anything without them
   clearly agreeing first.
+
+Reading mail and labels from a photo:
+- First say who it is from and what it is about, in one or two sentences.
+- Then say whether it needs action, what the action is, and any deadline.
+- Read dates, dollar amounts, and phone numbers exactly as printed.
+- If any part is blurry, cut off, or hard to read, say which part and ask
+  for a better photo. Never fill in words you cannot see.
+- If it looks like a scam or a sales pitch, say so gently and suggest
+  checking with a family member before doing anything.
 """
+
+# What we ask Claude each time a photo is sent.
+READ_REQUEST = "Please read this for me and tell me what I need to know."
+
+
+def load_image(path):
+    """Open a photo, fix its rotation, shrink it, and return it as base64 JPEG."""
+    img = Image.open(path)
+    img = ImageOps.exif_transpose(img)  # phones store rotation separately
+    img = img.convert("RGB")            # JPEG can't hold transparency
+    img.thumbnail((MAX_SIDE, MAX_SIDE))  # keeps the shape, only shrinks
+    buffer = io.BytesIO()
+    img.save(buffer, format="JPEG", quality=85)
+    return base64.standard_b64encode(buffer.getvalue()).decode("ascii")
+
+
+def build_message(user_text):
+    """Turn what the user typed into message content for Claude.
+
+    Returns None if a photo couldn't be loaded, so the caller can skip it.
+    """
+    if not user_text.lower().startswith("read "):
+        return user_text  # a normal question
+
+    # Dragging a file into the window wraps the path in quotes; remove them.
+    path = Path(user_text[5:].strip().strip('"'))
+    if not path.is_file():
+        print(f"\n[I can't find a file at: {path}]\n")
+        return None
+
+    try:
+        image_data = load_image(path)
+    except Exception as err:
+        print(f"\n[I couldn't open that photo: {err}]\n")
+        return None
+
+    print(f"\n[Reading {path.name}...]")
+    return [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": image_data,
+            },
+        },
+        {"type": "text", "text": READ_REQUEST},
+    ]
 
 
 def main():
@@ -43,7 +121,8 @@ def main():
     client = anthropic.Anthropic()  # reads the key from the environment
     history = []  # the conversation so far, so Claude remembers context
 
-    print("Navigator is ready. Type 'quit' to exit.\n")
+    print("Navigator is ready.")
+    print("Type a question, 'read <photo path>' to read mail, or 'quit'.\n")
 
     while True:
         user_text = input("You: ").strip()
@@ -53,7 +132,11 @@ def main():
         if not user_text:
             continue
 
-        history.append({"role": "user", "content": user_text})
+        content = build_message(user_text)
+        if content is None:
+            continue
+
+        history.append({"role": "user", "content": content})
 
         try:
             response = client.messages.create(
