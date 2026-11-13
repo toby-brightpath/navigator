@@ -8,6 +8,7 @@ Commands:
     read <path to photo>   Navigator reads the letter, bill, or label aloud
                            in plain language. Tip: drag the photo into the
                            window to paste its path.
+    <path to photo>        Same as read. A photo path on its own is enough.
     quit                   Exit.
 Anything else is a normal question.
 """
@@ -66,6 +67,34 @@ Reading mail and labels from a photo:
 # What we ask Claude each time a photo is sent.
 READ_REQUEST = "Please read this for me and tell me what I need to know."
 
+# File types we treat as photos when a path is typed on its own.
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".heic", ".webp"}
+
+
+def clean_path(text):
+    """Tidy up a pasted path so it can be opened.
+
+    Dragging a file into a window adds extra characters, depending on where:
+        Command Prompt:  "C:\\Photos\\bill.jpg"
+        PowerShell:      & 'C:\\Photos\\bill.jpg'
+    This removes the leading "& " and the quotes around the path.
+    """
+    text = text.strip()
+    if text.startswith("& "):
+        text = text[2:].strip()  # PowerShell's "run this" symbol
+    if len(text) >= 2 and text[0] == text[-1] == "'":
+        # PowerShell writes a ' inside a path as '' (Bob''s photo.jpg).
+        text = text[1:-1].replace("''", "'")
+    elif len(text) >= 2 and text[0] == text[-1] == '"':
+        text = text[1:-1]
+    return Path(text)
+
+
+def looks_like_photo(user_text):
+    """True if the text is just the path to a photo file that exists."""
+    path = clean_path(user_text)
+    return path.suffix.lower() in IMAGE_EXTENSIONS and path.is_file()
+
 
 def load_image(path):
     """Open a photo, fix its rotation, shrink it, and return it as base64 JPEG."""
@@ -83,11 +112,13 @@ def build_message(user_text):
 
     Returns None if a photo couldn't be loaded, so the caller can skip it.
     """
-    if not user_text.lower().startswith("read "):
+    if user_text.lower().startswith("read "):
+        path = clean_path(user_text[5:])
+    elif looks_like_photo(user_text):
+        path = clean_path(user_text)  # a photo dragged in without "read"
+    else:
         return user_text  # a normal question
 
-    # Dragging a file into the window wraps the path in quotes; remove them.
-    path = Path(user_text[5:].strip().strip('"'))
     if not path.is_file():
         print(f"\n[I can't find a file at: {path}]\n")
         return None
