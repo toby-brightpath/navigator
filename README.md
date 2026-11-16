@@ -35,7 +35,7 @@ Would you like me to say it one more time?
 ## Design principles
 
 - **Lead with the news.** The first sentence says who it's from and the one thing that matters, like an amount due or a decision.
-- **One step at a time.** Short answers, then an offer to go on. If nothing needs doing, say so and stop.
+- **One step at a time.** Short answers, then an offer to go on. If nothing needs doing, say so briefly and offer the rest.
 - **Never guess.** If part of a photo is blurry, cut off or covered by glare, Navigator says which part and asks for a better photo.
 - **Read numbers exactly.** Dates, amounts and phone numbers are read as printed, and phone numbers are read back in small groups of digits.
 - **Know what time it is.** Every message carries the current date, time, and how long it's been since the last one. Older adults often leave apps open for days. Navigator says "good morning" in the morning, and knows a 2021 reminder is long past.
