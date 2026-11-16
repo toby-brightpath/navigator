@@ -1,0 +1,3 @@
+# Store text files with LF line endings in the repository.
+# Git converts them for your editor as needed on checkout.
+* text=auto
