@@ -17,6 +17,7 @@ import base64
 import io
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import anthropic
@@ -66,10 +67,24 @@ How this app works (if asked, or if the person seems stuck):
 - Never describe buttons, menus, or features that are not listed here.
   If you are not sure the app can do something, say it cannot.
 
+Date and time:
+- Each message from the person starts with the current date and time,
+  added by the app. If it has been over an hour since their last message,
+  it also says how long.
+- Use the current time for greetings, like good morning or good evening.
+- Use it to tell whether dates on a document are past or upcoming.
+- Don't assume no time has passed between messages. The person may have
+  walked away for hours or days.
+- Don't repeat the date or time back unless it helps.
+
 Reading mail and labels from a photo:
 - Lead with the main news in the first sentence. Say who it is from and
   the one thing that matters most, like an amount due or a change.
+- For a bill, the first sentence says whether money is owed, for example
+  "This looks like a vet bill you already paid."
 - Then say whether it needs action, what the action is, and any deadline.
+- If nothing needs action, say so and keep it short. Then offer to read
+  the rest if they want it.
 - Leave out standard fine print unless it applies to the reader.
 - Read dates, dollar amounts, and phone numbers exactly as printed.
 - If any part is blurry, cut off, or hard to read, say which part and ask
@@ -121,8 +136,37 @@ def load_image(path):
     return base64.standard_b64encode(buffer.getvalue()).decode("ascii")
 
 
-def build_message(user_text):
+def time_since(earlier, now):
+    """How long between two times, in words, like '9 hours' or '2 days'."""
+    hours = int((now - earlier).total_seconds() // 3600)
+    if hours < 48:
+        return f"{hours} hour" + ("" if hours == 1 else "s")
+    days = hours // 24
+    return f"{days} days"
+
+
+def time_stamp(now, last_sent):
+    """The line put at the start of each message, so Claude knows the time.
+
+    Looks like: 'It is Monday, November 16, 2026, 7:15 AM.'
+    If over an hour has passed since the last message, it adds:
+    'It has been 9 hours since your last message.'
+    """
+    # Built by hand because Windows can't drop leading zeros (%-d, %-I).
+    hour = now.hour % 12 or 12  # 0 becomes 12 AM, 13 becomes 1 PM
+    stamp = (f"It is {now:%A, %B} {now.day}, {now.year}, "
+             f"{hour}:{now:%M %p}.")
+    if last_sent and now - last_sent > timedelta(hours=1):
+        stamp += f" It has been {time_since(last_sent, now)} since your last message."
+    return stamp
+
+
+def build_message(user_text, stamp):
     """Turn what the user typed into message content for Claude.
+
+    The time stamp goes at the start of every message, not in SYSTEM_PROMPT.
+    That keeps the system prompt the same every time, so it can be cached
+    later to save money.
 
     Returns None if a photo couldn't be loaded, so the caller can skip it.
     """
@@ -131,7 +175,7 @@ def build_message(user_text):
     elif looks_like_photo(user_text):
         path = clean_path(user_text)  # a photo dragged in without "read"
     else:
-        return user_text  # a normal question
+        return f"{stamp}\n\n{user_text}"  # a normal question
 
     if not path.is_file():
         print(f"\n[I can't find a file at: {path}]\n")
@@ -153,7 +197,7 @@ def build_message(user_text):
                 "data": image_data,
             },
         },
-        {"type": "text", "text": READ_REQUEST},
+        {"type": "text", "text": f"{stamp}\n\n{READ_REQUEST}"},
     ]
 
 
@@ -165,6 +209,7 @@ def main():
 
     client = anthropic.Anthropic()  # reads the key from the environment
     history = []  # the conversation so far, so Claude remembers context
+    last_sent = None  # when the user's previous message was sent
 
     print("Navigator is ready.")
     print("Type a question, 'read <photo path>' to read mail, or 'quit'.\n")
@@ -177,16 +222,23 @@ def main():
         if not user_text:
             continue
 
-        content = build_message(user_text)
+        # Read the clock now, as the message is sent, not at startup.
+        now = datetime.now()
+        content = build_message(user_text, time_stamp(now, last_sent))
         if content is None:
             continue
+        last_sent = now
 
         history.append({"role": "user", "content": content})
 
         try:
             response = client.messages.create(
                 model=MODEL,
-                max_tokens=1024,
+                # The most tokens Claude may use per reply, thinking included.
+                # 1024 was too small: thinking used it up and cut answers off.
+                # 16000 leaves plenty of room and stays under the time limit
+                # for a request that waits for the whole reply at once.
+                max_tokens=16000,
                 system=SYSTEM_PROMPT,
                 messages=history,
             )
@@ -204,6 +256,15 @@ def main():
         history.append({"role": "assistant", "content": response.content})
 
         print(f"\nNavigator: {reply}\n")
+        # If Claude ran out of room, say so instead of leaving a half sentence.
+        if response.stop_reason == "max_tokens":
+            print("[That answer was cut off because it ran too long. "
+                  "Try asking for a shorter answer.]\n")
+        # Claude's safety checks can decline a request. Say so plainly
+        # instead of showing an empty or half-finished answer.
+        elif response.stop_reason == "refusal":
+            print("[Navigator couldn't help with that one. "
+                  "Try asking a different way.]\n")
         # Shows how many tokens this exchange used, so you can watch cost.
         print(f"[tokens in: {response.usage.input_tokens}, "
               f"out: {response.usage.output_tokens}]\n")
