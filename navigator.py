@@ -34,6 +34,10 @@ except ImportError:
 # Which Claude model to use. Sonnet is a good balance of quality and cost.
 MODEL = "claude-sonnet-5-5"
 
+# Debug mode shows the technical details behind errors, for testing.
+# Turn it on for one PowerShell window with:  $env:NAVIGATOR_DEBUG = "1"
+DEBUG = os.environ.get("NAVIGATOR_DEBUG") == "1"
+
 # Photos are shrunk so the longest side is at most this many pixels.
 # Bigger than this costs more and doesn't help Claude read any better.
 MAX_SIDE = 1568
@@ -119,6 +123,19 @@ def clean_path(text):
     return Path(text)
 
 
+def looks_like_photo_path(text):
+    """True if the text looks like a path to a photo, even if it doesn't exist.
+
+    It must end in a photo type, and either have a folder in it (\\ or /)
+    or have no spaces. So "C:\\My Photos\\bill.jpg" and "bill.jpg" count,
+    but "me the file named bill.jpg" is a sentence, not a path.
+    """
+    path_text = str(clean_path(text))
+    if Path(path_text).suffix.lower() not in IMAGE_EXTENSIONS:
+        return False
+    return "\\" in path_text or "/" in path_text or " " not in path_text
+
+
 def looks_like_photo(user_text):
     """True if the text is just the path to a photo file that exists."""
     path = clean_path(user_text)
@@ -170,21 +187,36 @@ def build_message(user_text, stamp):
 
     Returns None if a photo couldn't be loaded, so the caller can skip it.
     """
+    # "read" only means a photo if a photo path follows it.
+    # "read me the phone number again" is a normal question.
+    path = None
     if user_text.lower().startswith("read "):
-        path = clean_path(user_text[5:])
+        if looks_like_photo_path(user_text[5:]):
+            path = clean_path(user_text[5:])
     elif looks_like_photo(user_text):
         path = clean_path(user_text)  # a photo dragged in without "read"
-    else:
+
+    if path is None:
         return f"{stamp}\n\n{user_text}"  # a normal question
 
+    # A photo path that's mistyped or moved gets a clear message,
+    # instead of a confusing answer from Claude.
     if not path.is_file():
-        print(f"\n[I can't find a file at: {path}]\n")
+        # Plain words, no file path: a long path is hard to read and not
+        # something the person can act on.
+        print("\n[I couldn't find that photo. "
+              "Try dragging it into the window again.]\n")
         return None
 
     try:
         image_data = load_image(path)
     except Exception as err:
-        print(f"\n[I couldn't open that photo: {err}]\n")
+        # Plain words instead of the technical error, which wouldn't help.
+        # The advice works no matter why it failed.
+        print("\n[I couldn't open that photo. "
+              "Try taking a new photo and dragging it in again.]\n")
+        if DEBUG:
+            print(f"[debug: {type(err).__name__}: {err}]\n")
         return None
 
     print(f"\n[Reading {path.name}...]")
